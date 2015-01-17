@@ -33,7 +33,7 @@ init(BaseKey) ->
     Ref = erlang:start_timer(Delay, self(), ?TIMER_MSG),
     {{input,In},{output,Out}} = erlang:statistics(io),
     PrevGC = erlang:statistics(garbage_collection),
-    case {sched_time_available(), application:get_env(vmstats, sched_time)} of
+    {ok, State} = case {sched_time_available(), application:get_env(vmstats, sched_time)} of
         {true, {ok,true}} ->
             {ok, #state{key = [BaseKey,$.],
                         timer_ref = Ref,
@@ -56,7 +56,8 @@ init(BaseKey) ->
                         sched_time = unavailable,
                         prev_io = {In,Out},
                         prev_gc = PrevGC}}
-    end.
+    end,
+    {ok, init_metrics(State)}.
 
 handle_call(_Msg, _From, State) ->
     {noreply, State}.
@@ -64,10 +65,10 @@ handle_call(_Msg, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({timeout, R, ?TIMER_MSG}, S = #state{key=K, delay=D, timer_ref=R}) ->
+handle_info({timeout, R, ?TIMER_MSG}, S = #state{delay=D, timer_ref=R}) ->
     %% Processes
-    statsderl:gauge([K,"proc_count"], erlang:system_info(process_count), 1.00),
-    statsderl:gauge([K,"proc_limit"], erlang:system_info(process_limit), 1.00),
+    exometer:update(key(S, proc_count), erlang:system_info(process_count)),
+    exometer:update(key(S, proc_limit), erlang:system_info(process_limit)),
 
     %% Messages in queues
     TotalMessages = lists:foldl(
@@ -80,41 +81,40 @@ handle_info({timeout, R, ?TIMER_MSG}, S = #state{key=K, delay=D, timer_ref=R}) -
         0,
         processes()
     ),
-    statsderl:gauge([K,"messages_in_queues"], TotalMessages, 1.00),
+    exometer:update(key(S, messages_in_queues), TotalMessages),
 
     %% Modules loaded
-    statsderl:gauge([K,"modules"], length(code:all_loaded()), 1.00),
+    exometer:update(key(S, modules), length(code:all_loaded())),
 
     %% Queued up processes (lower is better)
-    statsderl:gauge([K,"run_queue"], erlang:statistics(run_queue), 1.00),
+    exometer:update(key(S, run_queue), erlang:statistics(run_queue)),
 
     %% Error logger backlog (lower is better)
     {_, MQL} = process_info(whereis(error_logger), message_queue_len),
-    statsderl:gauge([K,"error_logger_queue_len"], MQL, 1.00),
+    exometer:update(key(S, error_logger_queue_len), MQL),
 
     %% Memory usage. There are more options available, but not all were kept.
     %% Memory usage is in bytes.
-    K2 = [K,"memory."],
     Mem = erlang:memory(),
-    statsderl:gauge([K2,"total"], proplists:get_value(total, Mem), 1.00),
-    statsderl:gauge([K2,"procs_used"], proplists:get_value(processes_used,Mem), 1.00),
-    statsderl:gauge([K2,"atom_used"], proplists:get_value(atom_used,Mem), 1.00),
-    statsderl:gauge([K2,"binary"], proplists:get_value(binary, Mem), 1.00),
-    statsderl:gauge([K2,"ets"], proplists:get_value(ets, Mem), 1.00),
+    exometer:update(key(S, [memory, total]), proplists:get_value(total, Mem)),
+    exometer:update(key(S, [memory, procs_used]), proplists:get_value(processes_used,Mem)),
+    exometer:update(key(S, [memory, atom_used]), proplists:get_value(atom_used,Mem)),
+    exometer:update(key(S, [memory, binary]), proplists:get_value(binary, Mem)),
+    exometer:update(key(S, [memory, ets]), proplists:get_value(ets, Mem)),
 
     %% Incremental values
     #state{prev_io={OldIn,OldOut}, prev_gc={OldGCs,OldWords,_}} = S,
     {{input,In},{output,Out}} = erlang:statistics(io),
     GC = {GCs, Words, _} = erlang:statistics(garbage_collection),
 
-    statsderl:increment([K,"io.bytes_in"], In-OldIn, 1.00),
-    statsderl:increment([K,"io.bytes_out"], Out-OldOut, 1.00),
-    statsderl:increment([K,"gc.count"], GCs-OldGCs, 1.00),
-    statsderl:increment([K,"gc.words_reclaimed"], Words-OldWords, 1.00),
+    exometer:update(key(S, [io, bytes_in]), In-OldIn),
+    exometer:update(key(S, [io, bytes_out]), Out-OldOut),
+    exometer:update(key(S, [gc, count]), GCs-OldGCs),
+    exometer:update(key(S, [gc, words_reclaimed]), Words-OldWords),
 
     %% Reductions across the VM, excluding current time slice, already incremental
     {_, Reds} = erlang:statistics(reductions),
-    statsderl:increment([K,"reductions"], Reds, 1.00),
+    exometer:update(key(S, reductions), Reds),
 
     %% Scheduler wall time
     #state{sched_time=Sched, prev_sched=PrevSched} = S,
@@ -123,8 +123,8 @@ handle_info({timeout, R, ?TIMER_MSG}, S = #state{key=K, delay=D, timer_ref=R}) -
             NewSched = lists:sort(erlang:statistics(scheduler_wall_time)),
             [begin
                 SSid = integer_to_list(Sid),
-                statsderl:timing([K,"scheduler_wall_time.",SSid,".active"], Active, 1.00),
-                statsderl:timing([K,"scheduler_wall_time.",SSid,".total"], Total, 1.00)
+                exometer:update(key(S, [scheduler_wall_time,SSid,active]), Active),
+                exometer:update(key(S, [scheduler_wall_time,SSid,total]), Total)
              end
              || {Sid, Active, Total} <- wall_time_diff(PrevSched, NewSched)],
             {noreply, S#state{timer_ref=erlang:start_timer(D, self(), ?TIMER_MSG),
@@ -173,5 +173,38 @@ sched_time_available() ->
 base_key() ->
     case application:get_env(vmstats, base_key) of
         {ok, V} -> V;
-        undefined -> "vmstats"
+        undefined -> vmstats
     end.
+
+key(S, Part) when is_atom(Part) ->
+    key(S, [Part]);
+key(#state{key = Key}, Parts) when is_list(Parts) ->
+    [Key, node() | Parts].
+
+init_metrics(#state{sched_time = Sched} = S) ->
+    exometer:new(key(S, proc_count), gauge),
+    exometer:new(key(S, proc_limit), gauge),
+    exometer:new(key(S, messages_in_queues), gauge),
+    exometer:new(key(S, modules), gauge),
+    exometer:new(key(S, error_logger_queue_len), gauge),
+    exometer:new(key(S, [memory, total]), gauge),
+    exometer:new(key(S, [memory, procs_used]), gauge),
+    exometer:new(key(S, [memory, atom_used]), gauge),
+    exometer:new(key(S, [memory, binary]), gauge),
+    exometer:new(key(S, [memory, ets]), gauge),
+    exometer:new(key(S, [io, bytes_in]), counter),
+    exometer:new(key(S, [io, bytes_out]), counter),
+    exometer:new(key(S, [io, count]), counter),
+    exometer:new(key(S, [io, words_reclaimed]), counter),
+    exometer:new(key(S, reductions), counter),
+    case Sched of
+        enabled ->
+            NewSched = lists:sort(erlang:statistics(scheduler_wall_time)),
+            [begin
+                 exometer:new(key(S, [scheduler_wall_time,Id,active]), gauge),
+                 exometer:new(key(S, [scheduler_wall_time,Id,total]), gauge)
+             end || {Id, _, _} <- NewSched];
+        _ ->
+            nop
+    end,
+    S.

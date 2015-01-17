@@ -1,6 +1,8 @@
 .PHONY: all test clean edoc compile deps
 REBAR=./rebar
 
+export EXOMETER_PACKAGES="(minimal)"
+
 all:
 	@$(REBAR) get-deps compile
 

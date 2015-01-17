@@ -5,7 +5,7 @@
   {applications, [
     kernel,
     stdlib,
-    statsderl
+    exometer
   ]},
   {mod, {vmstats, []}},
   {applications, [statsderl]},
