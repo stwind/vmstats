@@ -16,6 +16,7 @@
                 prev_sched :: [{integer(), integer(), integer()}],
                 timer_ref :: reference(),
                 delay :: integer(), % milliseconds
+                nodename :: atom(),
                 prev_io :: {In::integer(), Out::integer()},
                 prev_gc :: {GCs::integer(), Words::integer(), 0}}).
 %%% INTERFACE
@@ -38,6 +39,7 @@ init(BaseKey) ->
             {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
+                        nodename = nodename(),
                         sched_time = enabled,
                         prev_sched = lists:sort(erlang:statistics(scheduler_wall_time)),
                         prev_io = {In,Out},
@@ -46,6 +48,7 @@ init(BaseKey) ->
             {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
+                        nodename = nodename(),
                         sched_time = disabled,
                         prev_io = {In,Out},
                         prev_gc = PrevGC}};
@@ -53,6 +56,7 @@ init(BaseKey) ->
             {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
+                        nodename = nodename(),
                         sched_time = unavailable,
                         prev_io = {In,Out},
                         prev_gc = PrevGC}}
@@ -175,8 +179,8 @@ base_key() ->
 
 key(S, Part) when is_atom(Part) ->
     key(S, [Part]);
-key(#state{key = Key}, Parts) when is_list(Parts) ->
-    [Key, node() | Parts].
+key(#state{key = Key, nodename = Node}, Parts) when is_list(Parts) ->
+    [Key, Node | Parts].
 
 init_metrics(#state{sched_time = Sched} = S) ->
     exometer:new(key(S, proc_count), gauge),
@@ -205,3 +209,11 @@ init_metrics(#state{sched_time = Sched} = S) ->
             nop
     end,
     S.
+
+nodename() ->
+    NodeStr = atom_to_list(node()),
+    NodeStr2 = lists:foldl(
+                 fun($., Acc) -> [$_ | Acc];
+                    (C, Acc) -> [C | Acc]
+                 end, [], NodeStr),
+    list_to_atom(lists:reverse(NodeStr2)).
