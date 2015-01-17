@@ -35,7 +35,7 @@ init(BaseKey) ->
     PrevGC = erlang:statistics(garbage_collection),
     {ok, State} = case {sched_time_available(), application:get_env(vmstats, sched_time)} of
         {true, {ok,true}} ->
-            {ok, #state{key = [BaseKey,$.],
+            {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
                         sched_time = enabled,
@@ -43,14 +43,14 @@ init(BaseKey) ->
                         prev_io = {In,Out},
                         prev_gc = PrevGC}};
         {true, _} ->
-            {ok, #state{key = [BaseKey,$.],
+            {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
                         sched_time = disabled,
                         prev_io = {In,Out},
                         prev_gc = PrevGC}};
         {false, _} ->
-            {ok, #state{key = [BaseKey,$.],
+            {ok, #state{key = BaseKey,
                         timer_ref = Ref,
                         delay = Delay,
                         sched_time = unavailable,
@@ -171,10 +171,7 @@ sched_time_available() ->
 
 -spec base_key() -> term().
 base_key() ->
-    case application:get_env(vmstats, base_key) of
-        {ok, V} -> V;
-        undefined -> vmstats
-    end.
+    application:get_env(vmstats, base_key, vmstats).
 
 key(S, Part) when is_atom(Part) ->
     key(S, [Part]);
